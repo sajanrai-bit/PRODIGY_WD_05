@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<title>Weather — Intern Demo</title>
+	<style>
+		:root{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;margin:0}
+		body{display:flex;align-items:center;justify-content:center;min-height:100vh;background:linear-gradient(180deg,#e6f0ff,#f7fbff)}
+		.card{background:white;padding:20px;border-radius:12px;box-shadow:0 8px 30px rgba(20,40,80,.08);width:320px;max-width:94%}
+		.row{display:flex;align-items:center;justify-content:space-between}
+		h1{font-size:18px;margin:0 0 12px}
+		.big{font-size:48px;font-weight:600;margin:6px 0}
+		.muted{color:#556; font-size:13px}
+		.meta{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+		button{background:#0366d6;color:#fff;border:0;padding:8px 10px;border-radius:8px;cursor:pointer}
+		button.secondary{background:#e6eefc;color:#0366d6}
+		.small{font-size:13px}
+		.center{text-align:center}
+	</style>
+</head>
+<body>
+	<div class="card" id="app">
+		<div class="row">
+			<h1>Current Weather</h1>
+			<div>
+				<button id="refresh">Refresh</button>
+			</div>
+		</div>
+
+		<div style="display:flex;gap:8px;margin-top:10px;align-items:center">
+			<input id="searchInput" placeholder="Search city or place" style="flex:1;padding:8px;border-radius:8px;border:1px solid #e1e8f5" />
+			<button id="searchBtn" class="secondary">Search</button>
+		</div>
+
+		<div class="center" style="margin-top:8px">
+			<div id="icon" style="font-size:48px">⛅</div>
+			<div class="big" id="temp">--°</div>
+			<div class="muted" id="cond">Loading…</div>
+			<div class="muted" id="loc">Detecting location…</div>
+		</div>
+
+		<div class="meta" id="extras">
+			<div class="small">Wind: <span id="wind">—</span></div>
+			<div class="small">Humidity: <span id="humidity">—</span></div>
+			<div class="small">Time: <span id="time">—</span></div>
+			<div class="small">Coords: <span id="coords">—</span></div>
+		</div>
+
+		<div style="display:flex;gap:8px;margin-top:12px">
+			<button id="unitToggle" class="secondary">Show °F</button>
+			<button id="share">Share</button>
+		</div>
+
+		<p class="muted small" style="margin-top:12px">Uses Open-Meteo (no API key). Allows geolocation or IP fallback.</p>
+	</div>
+
+	<script>
+		// Mapping Open-Meteo weathercode to description and emoji
+		const weatherMap = {
+			0: ['Clear', '☀️'],
+			1: ['Mainly clear', '🌤️'],
+			2: ['Partly cloudy', '⛅'],
+			3: ['Overcast', '☁️'],
+			45: ['Fog', '🌫️'],
+			48: ['Depositing rime fog', '🌫️'],
+			51: ['Light drizzle', '🌦️'],
+			53: ['Moderate drizzle', '🌦️'],
+			55: ['Dense drizzle', '🌧️'],
+			56: ['Light freezing drizzle', '🌧️❄️'],
+			57: ['Dense freezing drizzle', '🌧️❄️'],
+			61: ['Slight rain', '🌧️'],
+			63: ['Moderate rain', '🌧️'],
+			65: ['Heavy rain', '⛈️'],
+			66: ['Light freezing rain', '🌧️❄️'],
+			67: ['Heavy freezing rain', '🌧️❄️'],
+			71: ['Slight snow', '🌨️'],
+			73: ['Moderate snow', '🌨️'],
+			75: ['Heavy snow', '❄️'],
+			77: ['Snow grains', '❄️'],
+			80: ['Slight rain showers', '🌦️'],
+			81: ['Moderate rain showers', '🌦️'],
+			82: ['Violent rain showers', '⛈️'],
+			85: ['Slight snow showers', '🌨️'],
+			86: ['Heavy snow showers', '❄️'],
+			95: ['Thunderstorm', '⛈️'],
+			96: ['Thunderstorm with slight hail', '⛈️'],
+			99: ['Thunderstorm with heavy hail', '⛈️']
+		};
+
+		const el = id => document.getElementById(id);
+		let currentC = null;
+		let showF = false;
+
+		async function getLocation() {
+			// Try browser geolocation first
+			return new Promise((resolve) => {
+				if (navigator.geolocation) {
+					const timer = setTimeout(() => {
+						// If geolocation takes too long, fallback
+						fetchIPLocation().then(resolve);
+					}, 7000);
+
+					navigator.geolocation.getCurrentPosition(pos => {
+						clearTimeout(timer);
+						resolve({lat: pos.coords.latitude, lon: pos.coords.longitude, source: 'geolocation'});
+					}, err => {
+						clearTimeout(timer);
+						fetchIPLocation().then(resolve);
+					}, {enableHighAccuracy: false, timeout: 7000});
+				} else {
+					fetchIPLocation().then(resolve);
+				}
+			});
+		}
+
+		async function fetchIPLocation() {
+			try {
+				const r = await fetch('https://ipapi.co/json/');
+				if (!r.ok) throw new Error('IP lookup failed');
+				const j = await r.json();
+				return {lat: j.latitude, lon: j.longitude, city: j.city, region: j.region, country: j.country_name, source: 'ip'};
+			} catch (e) {
+				return {lat: 0, lon: 0, source: 'none'};
+			}
+		}
+
+		async function fetchWeather(lat, lon) {
+			const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&current_weather=true&hourly=relativehumidity_2m&timezone=auto`;
+			const res = await fetch(url);
+			if (!res.ok) throw new Error('Weather API error');
+			return res.json();
+		}
+
+		function findHumidity(hourly, time) {
+			if (!hourly || !hourly.time) return null;
+			const idx = hourly.time.indexOf(time);
+			if (idx === -1) return null;
+			return hourly.relativehumidity_2m[idx];
+		}
+
+		function cToF(c){return Math.round((c*9/5)+32)}
+
+		async function reverseGeocode(lat, lon) {
+			try {
+				const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`);
+				if (!r.ok) throw new Error('No name');
+				const j = await r.json();
+				return j.display_name || null;
+			} catch (e) {
+				return null;
+			}
+		}
+
+		async function geocode(query) {
+			// Use Nominatim search to convert a place name to lat/lon
+			try {
+				const q = encodeURIComponent(query);
+				const r = await fetch(`https://nominatim.openstreetmap.org/search?q=${q}&format=jsonv2&limit=1`);
+				if (!r.ok) throw new Error('Geocode failed');
+				const j = await r.json();
+				if (!j || j.length === 0) return null;
+				return {lat: parseFloat(j[0].lat), lon: parseFloat(j[0].lon), display_name: j[0].display_name};
+			} catch (e) {
+				return null;
+			}
+		}
+
+		async function update() {
+			el('cond').textContent = 'Loading…';
+			el('temp').textContent = '--°';
+			el('loc').textContent = 'Detecting location…';
+			try {
+				const loc = await getLocation();
+				el('coords').textContent = `${loc.lat.toFixed(4)}, ${loc.lon.toFixed(4)}`;
+
+				let name = loc.city ? `${loc.city}${loc.region?(', '+loc.region):''}` : null;
+				if (!name && loc.source === 'geolocation') {
+					name = await reverseGeocode(loc.lat, loc.lon);
+				} else if (loc.source === 'ip' && !name) {
+					name = `${loc.country || ''}`;
+				}
+				// If we still don't have a human-readable name, show coordinates and source
+				const displayName = name || `${loc.lat.toFixed(3)}, ${loc.lon.toFixed(3)}`;
+				el('loc').textContent = loc.source ? `${displayName} (${loc.source})` : displayName;
+
+				const data = await fetchWeather(loc.lat, loc.lon);
+				if (!data.current_weather) throw new Error('No current weather');
+
+				const cw = data.current_weather;
+				currentC = cw.temperature;
+				const wcode = cw.weathercode;
+				const mapping = weatherMap[wcode] || ['Unknown', '❓'];
+				el('icon').textContent = mapping[1];
+				el('cond').textContent = mapping[0];
+				el('time').textContent = cw.time;
+				el('wind').textContent = `${Math.round(cw.windspeed)} m/s`;
+
+				// humidity from hourly
+				const hum = findHumidity(data.hourly, cw.time);
+				el('humidity').textContent = hum!=null ? `${hum}%` : '—';
+
+				renderTemp();
+			} catch (err) {
+				el('cond').textContent = 'Error fetching weather';
+				el('loc').textContent = '';
+				console.error(err);
+			}
+		}
+
+		function renderTemp(){
+			if (currentC==null) return;
+			if (showF) {
+				el('temp').textContent = `${cToF(currentC)}°F`;
+				el('unitToggle').textContent = 'Show °C';
+			} else {
+				el('temp').textContent = `${Math.round(currentC)}°C`;
+				el('unitToggle').textContent = 'Show °F';
+			}
+		}
+
+		el('refresh').addEventListener('click', update);
+		el('unitToggle').addEventListener('click', ()=>{ showF = !showF; renderTemp(); });
+		el('share').addEventListener('click', async ()=>{
+			const text = `${el('loc').textContent}: ${el('temp').textContent} — ${el('cond').textContent}`;
+			if (navigator.share) {
+				try { await navigator.share({title:'My Weather',text}); } catch(e){}
+			} else {
+				await navigator.clipboard.writeText(text);
+				alert('Weather copied to clipboard');
+			}
+		});
+
+		// manual search handler
+		el('searchBtn').addEventListener('click', async ()=>{
+			const q = el('searchInput').value.trim();
+			if (!q) return alert('Enter a place to search');
+			el('cond').textContent = 'Searching…';
+			const g = await geocode(q);
+			if (!g) { el('cond').textContent = 'Place not found'; return; }
+			el('coords').textContent = `${g.lat.toFixed(4)}, ${g.lon.toFixed(4)}`;
+			el('loc').textContent = g.display_name + ' (search)';
+			try {
+				const data = await fetchWeather(g.lat, g.lon);
+				if (!data.current_weather) throw new Error('No current weather');
+				const cw = data.current_weather;
+				currentC = cw.temperature;
+				const wcode = cw.weathercode;
+				const mapping = weatherMap[wcode] || ['Unknown', '❓'];
+				el('icon').textContent = mapping[1];
+				el('cond').textContent = mapping[0];
+				el('time').textContent = cw.time;
+				el('wind').textContent = `${Math.round(cw.windspeed)} m/s`;
+				const hum = findHumidity(data.hourly, cw.time);
+				el('humidity').textContent = hum!=null ? `${hum}%` : '—';
+				renderTemp();
+			} catch (e) {
+				el('cond').textContent = 'Error fetching weather for place';
+				console.error(e);
+			}
+		});
+
+		el('searchInput').addEventListener('keydown', (e)=>{ if (e.key==='Enter') el('searchBtn').click(); });
+
+		// initial load
+		update();
+	</script>
+</body>
+</html>
+
